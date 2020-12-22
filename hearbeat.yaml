@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-config
+  namespace: kube-system
+  labels:
+    k8s-app: heartbeat
+data:
+  heartbeat.yml: |
+    heartbeat.monitors:
+    - type: http
+      schedule: '@every 5s'
+      urls: ["http://elasticsearch-logging:9200","http://kibana-logging:5601","http://cfo:3003/v1","http://front-end:5000","http://crm-proxy:3002/v1","http://mongoclient:3000","http://cron-scheduler:3007/v1","http://cso:3005","http://database:27017","http://direct-debits:3009/v1","http://loan-management:3008/v1","http://settings:4001/core"]
+      check.response.status: 200
+    - type: icmp
+      schedule: '@every 5s'
+      hosts:
+        - elasticsearch-logging
+        - kibana-logging
+        - cfo
+        - front-end
+        - crm-proxy
+        - cso
+        - mongoclient
+        - cron-scheduler
+        - database
+        - direct-debits
+        - loan-management
+    processors:
+    - add_cloud_metadata:
+    output.elasticsearch:
+      hosts: ['elasticsearch-logging:9200']
+      username: elastic
+      password: changeme
+
+---
+
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: heartbeat
+  namespace: kube-system
+  labels:
+    k8s-app: heartbeat
+spec:
+  template:
+    metadata:
+      labels:
+        k8s-app: heartbeat
+    spec:
+      terminationGracePeriodSeconds: 30
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: heartbeat
+        image: docker.elastic.co/beats/heartbeat:6.3.0
+        args: [
+          "-c", "/usr/share/heartbeat/heartbeat.yml",
+          "-e",
+          "-system.hostfs=/hostfs",
+        ]
+        env:
+        - name: ELASTICSEARCH_HOST
+          value: elasticsearch-logging
+        - name: ELASTICSEARCH_PORT
+          value: "9200"
+        - name: ELASTICSEARCH_USERNAME
+          value: elastic
+        - name: ELASTICSEARCH_PASSWORD
+          value: changeme
+        - name: ELASTIC_CLOUD_ID
+          value:
+        - name: ELASTIC_CLOUD_AUTH
+          value:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        securityContext:
+          runAsUser: 0
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: config
+          mountPath: /usr/share/heartbeat/heartbeat.yml
+          readOnly: true
+          subPath: heartbeat.yml
+        - name: dockersock
+          mountPath: /var/run/docker.sock
+        - name: proc
+          mountPath: /hostfs/proc
+          readOnly: true
+        - name: cgroup
+          mountPath: /hostfs/sys/fs/cgroup
+          readOnly: true
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: dockersock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: config
+        configMap:
+          defaultMode: 0600
+          name: heartbeat-config
+      # We set an `emptyDir` here to ensure the manifest will deploy correctly.
+      # It's recommended to change this to a `hostPath` folder, to ensure internal data
+      # files survive pod changes (ie: version upgrade)
+      - name: data
+        emptyDir: {}
+---
+
+# Deploy singleton instance in the whole cluster for some unique data sources, like kube-state-metrics
+apiVersion: apps/v1beta1
+kind: Deployment
+metadata:
+  namespace: kube-system
+  name: heartbeat
+  labels:
+    k8s-app: heartbeat
+spec:
+  template:
+    metadata:
+      labels:
+        k8s-app: heartbeat
+    spec:
+      containers:
+      - name: heartbeat
+        image: docker.elastic.co/beats/heartbeat:6.3.0
+        args: [
+          "-c", "/usr/share/heartbeat/heartbeat.yml",
+          "-e",
+        ]
+        env:
+        - name: ELASTICSEARCH_HOST
+          value: elasticsearch-logging
+        - name: ELASTICSEARCH_PORT
+          value: "9200"
+        - name: ELASTICSEARCH_USERNAME
+          value: elastic
+        - name: ELASTICSEARCH_PASSWORD
+          value: changeme
+        - name: ELASTIC_CLOUD_ID
+          value:
+        - name: ELASTIC_CLOUD_AUTH
+          value:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        securityContext:
+          runAsUser: 0
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: config
+          mountPath: /usr/share/heartbeat/heartbeat.yml
+          readOnly: true
+          subPath: heartbeat.yml
+      volumes:
+      - name: config
+        configMap:
+          defaultMode: 0600
+          name: heartbeat-config
+
